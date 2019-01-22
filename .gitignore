@@ -1,0 +1,5 @@
+*.pyc
+MO_tables/
+DSA_info/
+pics/
+venv/
