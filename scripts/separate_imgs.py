@@ -3,7 +3,8 @@ import shutil
 import configparser
 config = configparser.ConfigParser()
 
-config.read('/Users/pablomartin/python/Mushroom_Classifier/defaults.config')
+config.read('~/scripts/defaults.config')
+print(config.sections())
 
 
 MIN_IMAGES_PER_CLASS = int(config['files']['MIN_IMAGES_PER_CLASS'])
