@@ -3,6 +3,8 @@ MO_tables/
 DSA_info/
 final_dataframes/
 flat_images/
-pics/
+side_flat_images/
 venv/
 .ipynb_checkpoints/
+.DS_Store
+:
