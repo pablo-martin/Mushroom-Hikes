@@ -11,14 +11,11 @@ class Inputs(object):
 
 
 class Dataset(object):
-    img1_resized = 'img1_resized'
-    img2_resized = 'img2_resized'
-    label = 'same_person'
 
     def __init__(self, generator = ImageGenerator(images_path = '/Users/pablomartin/python/Mushroom_Classifier/flat_images'),
                       batch_size = 10,
                       prefetch_batch_buffer = 5,
-                      target_size = 128,
+                      target_size = 299,
                       balanced = 0):
         self.batch_size = batch_size
         self.prefetch_batch_buffer = prefetch_batch_buffer
@@ -50,3 +47,27 @@ class Dataset(object):
         img1.set_shape([None, None, 3])
 
         return tf.image.resize_images(img1, target_size)
+
+    def add_jpeg_decoding(module_spec):
+      """Adds operations that perform JPEG decoding and resizing to the graph..
+
+      Args:
+        module_spec: The hub.ModuleSpec for the image module being used.
+
+      Returns:
+        Tensors for the node to feed JPEG data into, and the output of the
+          preprocessing steps.
+      """
+      input_height, input_width = hub.get_expected_image_size(module_spec)
+      input_depth = hub.get_num_image_channels(module_spec)
+      jpeg_data = tf.placeholder(tf.string, name='DecodeJPGInput')
+      decoded_image = tf.image.decode_jpeg(jpeg_data, channels=input_depth)
+      # Convert from full range of uint8 to range [0,1] of float32.
+      decoded_image_as_float = tf.image.convert_image_dtype(decoded_image,
+                                                            tf.float32)
+      decoded_image_4d = tf.expand_dims(decoded_image_as_float, 0)
+      resize_shape = tf.stack([input_height, input_width])
+      resize_shape_as_int = tf.cast(resize_shape, dtype=tf.int32)
+      resized_image = tf.image.resize_bilinear(decoded_image_4d,
+                                               resize_shape_as_int)
+      return jpeg_data, resized_image
