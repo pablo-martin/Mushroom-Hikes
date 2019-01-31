@@ -3,7 +3,7 @@ import shutil
 import configparser
 config = configparser.ConfigParser()
 
-config.read('~/scripts/defaults.config')
+config.read('/home/ubuntu/Mushroom-Hikes/scripts/defaults.config')
 print(config.sections())
 
 

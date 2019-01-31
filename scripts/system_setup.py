@@ -1,3 +1,7 @@
+import re
+import hashlib
+import collections
+
 def create_image_lists(image_dir, testing_percentage, validation_percentage):
 	"""Builds a list of training images from the file system.
 
@@ -15,7 +19,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
 	split into training, testing, and validation sets within each label.
 	The order of items defines the class indices.
 	"""
-	MAX_NUM_IMAGES_PER_CLASS = 2 ** 27 - 1 
+	MAX_NUM_IMAGES_PER_CLASS = 2 ** 27 - 1
 	if not tf.gfile.Exists(image_dir):
 		tf.logging.error("Image directory '" + image_dir + "' not found.")
 		return None
@@ -80,3 +84,81 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
 			'validation': validation_images,
 		}
 	return result
+
+
+def ensure_dir_exists(dir_name):
+  """Makes sure the folder exists on disk.
+
+  Args:
+    dir_name: Path string to the folder we want to create.
+  """
+  if not os.path.exists(dir_name):
+    os.makedirs(dir_name)
+
+
+def add_jpeg_decoding(module_spec):
+	"""Adds operations that perform JPEG decoding and resizing to the graph..
+
+	Args:
+	module_spec: The hub.ModuleSpec for the image module being used.
+
+	Returns:
+	Tensors for the node to feed JPEG data into, and the output of the
+	  preprocessing steps.
+	"""
+	input_height, input_width = hub.get_expected_image_size(module_spec)
+	input_depth = hub.get_num_image_channels(module_spec)
+	jpeg_data = tf.placeholder(tf.string, name='DecodeJPGInput')
+	decoded_image = tf.image.decode_jpeg(jpeg_data, channels=input_depth)
+	# Convert from full range of uint8 to range [0,1] of float32.
+	decoded_image_as_float = tf.image.convert_image_dtype(decoded_image,
+	                                                    tf.float32)
+	decoded_image_4d = tf.expand_dims(decoded_image_as_float, 0)
+	resize_shape = tf.stack([input_height, input_width])
+	resize_shape_as_int = tf.cast(resize_shape, dtype=tf.int32)
+	resized_image = tf.image.resize_bilinear(decoded_image_4d,
+	                                       resize_shape_as_int)
+	return jpeg_data, resized_image
+
+def cache_bottlenecks(sess, image_lists, image_dir, bottleneck_dir,
+                      jpeg_data_tensor, decoded_image_tensor,
+                      resized_input_tensor, bottleneck_tensor, module_name):
+	"""Ensures all the training, testing, and validation bottlenecks are cached.
+
+	Because we're likely to read the same image multiple times (if there are no
+	distortions applied during training) it can speed things up a lot if we
+	calculate the bottleneck layer values once for each image during
+	preprocessing, and then just read those cached values repeatedly during
+	training. Here we go through all the images we've found, calculate those
+	values, and save them off.
+
+	Args:
+	sess: The current active TensorFlow Session.
+	image_lists: OrderedDict of training images for each label.
+	image_dir: Root folder string of the subfolders containing the training
+	images.
+	bottleneck_dir: Folder string holding cached files of bottleneck values.
+	jpeg_data_tensor: Input tensor for jpeg data from file.
+	decoded_image_tensor: The output of decoding and resizing the image.
+	resized_input_tensor: The input node of the recognition graph.
+	bottleneck_tensor: The penultimate output layer of the graph.
+	module_name: The name of the image module being used.
+
+	Returns:
+	Nothing.
+	"""
+	how_many_bottlenecks = 0
+	ensure_dir_exists(bottleneck_dir)
+	for label_name, label_lists in image_lists.items():
+		for category in ['training', 'testing', 'validation']:
+	  		category_list = label_lists[category]
+	  		for index, unused_base_name in enumerate(category_list):
+		    	get_or_create_bottleneck(
+			        sess, image_lists, label_name, index, image_dir, category,
+			        bottleneck_dir, jpeg_data_tensor, decoded_image_tensor,
+			        resized_input_tensor, bottleneck_tensor, module_name)
+
+			    how_many_bottlenecks += 1
+			    if how_many_bottlenecks % 100 == 0:
+		      		tf.logging.info(
+			          str(how_many_bottlenecks) + ' bottleneck files created.')
