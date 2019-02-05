@@ -13,7 +13,7 @@ from flask_bootstrap import Bootstrap
 
 ALLOWED_EXTENSIONS = set(['txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'])
 
-BASE_DIR = os.environ['HOME'] + '/python/Mushroom_Classifier/'
+BASE_DIR = os.environ['HOME'] +  '/Mushroom-Hikes/'
 model_file = BASE_DIR + 'front_end/graph/one_layer_full_data.pb'
 label_file = BASE_DIR + 'front_end/graph/one_layer_full_data_labels.txt'
 
@@ -128,4 +128,4 @@ def upload_file():
 
 if __name__ == '__main__':
     print('sensible eyes')
-    application.run(debug=True)
+    application.run(host="0.0.0.0", port=8080)
