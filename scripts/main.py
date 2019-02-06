@@ -105,139 +105,139 @@ def main():
 
 
 
-with tf.Session() as sess:
-    sess.run(init)
-    # Merge all the summaries and write them out to the summaries_dir
-    merged = tf.summary.merge_all()
-    train_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'train/',
-                                                                    sess.graph)
-    validation_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'validation/')
+    with tf.Session() as sess:
+        sess.run(init)
+        # Merge all the summaries and write them out to the summaries_dir
+        merged = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'train/',
+                                                                        sess.graph)
+        validation_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'validation/')
 
 
-    '''
-    We start training step. Each training step will go thru one batch size
-    which we are setting to 1000, whilst our training set is ~700K
-    So each epoch will be around ~700 TRAINING_STEPS
-    '''
-    for i in range(TRAINING_STEPS):
+        '''
+        We start training step. Each training step will go thru one batch size
+        which we are setting to 1000, whilst our training set is ~700K
+        So each epoch will be around ~700 TRAINING_STEPS
+        '''
+        for i in range(TRAINING_STEPS):
+            bottlenecks, genus_truths, species_truths, _ = \
+                                        sess.run(training_dataset.next_element)
+            #training step
+            train_summary, _ = sess.run([merged, M.train_step],
+                                feed_dict = { \
+                                 M.bottleneck_input : bottlenecks,
+                                 M.ground_truth_species_input : species_truths,
+                                 M.ground_truth_genus_input: genus_truths,
+                                 M.keep_prob : 0.5})
+            train_writer.add_summary(train_summary, i)
+
+            is_last_step = (i + 1 == TRAINING_STEPS)
+            if (i % EVALUATION_STEP) == 0 or is_last_step:
+                '''
+                We are evaluating accuracy on the training batch that we just
+                trained on
+                '''
+                #evaluation step
+                train_genus_accuracy, train_species_accuracy = \
+                          sess.run([M.genus_evaluation_step,
+                                    M.species_evaluation_step], feed_dict = \
+                                    {M.bottleneck_input : bottlenecks,
+                                     M.ground_truth_species_input : species_truths,
+                                     M.ground_truth_genus_input: genus_truths,
+                                     M.keep_prob : 1.0})
+                '''
+                Now we are drawing validation_batch_size pictures from the
+                validation set and calculating accuracy, and not updating the
+                weights of the network
+                '''
+
+                bottlenecks, genus_truths, species_truths, _ = \
+                                        sess.run(validation_dataset.next_element)
+                #evaluation step
+                validation_summary, validate_genus_accuracy, validate_species_accuracy = \
+                          sess.run([merged, M.genus_evaluation_step,
+                                    M.species_evaluation_step], feed_dict = \
+                                    {M.bottleneck_input : bottlenecks,
+                                     M.ground_truth_species_input : species_truths,
+                                     M.ground_truth_genus_input: genus_truths,
+                                     M.keep_prob : 1.0})
+                validation_writer.add_summary(validation_summary, i)
+                tf.logging.info('%s: Step %d: Train \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
+                    %(datetime.now(), i, train_genus_accuracy * 100, train_species_accuracy * 100))
+                tf.logging.info('%s: Step %d: Validate \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
+                    %(datetime.now(), i, validate_genus_accuracy * 100, validate_species_accuracy * 100))
+
+            if (INTERMEDIATE_FREQ > 0 and (i % INTERMEDIATE_FREQ == 0) and i > 0):
+                # If we want to do an intermediate save, save a checkpoint of the train
+                # graph, to restore into the eval graph.
+                #train_saver.save(sess, CHECKPOINT_NAME)
+                intermediate_file_name = (BASE_DIR + GRAPH_DIR + 'intermediate_' \
+                                                               + str(i) + '.pb')
+                train_saver.save(sess, CHECKPOINT_NAME)
+                tf.logging.info('Save intermediate result to : ' +
+                                intermediate_file_name)
+                output_graph_def = tf.graph_util.convert_variables_to_constants(
+                                sess, sess.graph.as_graph_def(),
+                                ['final_genus_tensor','final_species_tensor'])
+                with tf.gfile.FastGFile(intermediate_file_name, 'wb') as f:
+                    f.write(output_graph_def.SerializeToString())
+
+        '''
+        Now that training is done we will run our final evaluation step on the
+        entire test set
+        '''
+        train_saver.save(sess, CHECKPOINT_NAME) #save before we do this
         bottlenecks, genus_truths, species_truths, _ = \
-                                    sess.run(training_dataset.next_element)
-        #training step
-        train_summary, _ = sess.run([merged, M.train_step],
-                            feed_dict = { \
-                             M.bottleneck_input : bottlenecks,
+                                sess.run(testing_dataset.next_element)
+
+        #evaluation step
+        test_genus_accuracy, test_species_accuracy = \
+                  sess.run([M.genus_evaluation_step,
+                            M.species_evaluation_step], feed_dict = \
+                            {M.bottleneck_input : bottlenecks,
                              M.ground_truth_species_input : species_truths,
                              M.ground_truth_genus_input: genus_truths,
-                             M.keep_prob : 0.5})
-        train_writer.add_summary(train_summary, i)
-
-        is_last_step = (i + 1 == TRAINING_STEPS)
-        if (i % EVALUATION_STEP) == 0 or is_last_step:
-            '''
-            We are evaluating accuracy on the training batch that we just
-            trained on
-            '''
-            #evaluation step
-            train_genus_accuracy, train_species_accuracy = \
-                      sess.run([M.genus_evaluation_step,
-                                M.species_evaluation_step], feed_dict = \
-                                {M.bottleneck_input : bottlenecks,
-                                 M.ground_truth_species_input : species_truths,
-                                 M.ground_truth_genus_input: genus_truths,
-                                 M.keep_prob : 1.0})
-            '''
-            Now we are drawing validation_batch_size pictures from the
-            validation set and calculating accuracy, and not updating the
-            weights of the network
-            '''
-
-            bottlenecks, genus_truths, species_truths, _ = \
-                                    sess.run(validation_dataset.next_element)
-            #evaluation step
-            validation_summary, validate_genus_accuracy, validate_species_accuracy = \
-                      sess.run([merged, M.genus_evaluation_step,
-                                M.species_evaluation_step], feed_dict = \
-                                {M.bottleneck_input : bottlenecks,
-                                 M.ground_truth_species_input : species_truths,
-                                 M.ground_truth_genus_input: genus_truths,
-                                 M.keep_prob : 1.0})
-            validation_writer.add_summary(validation_summary, i)
-            tf.logging.info('%s: Step %d: Train \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
-                %(datetime.now(), i, train_genus_accuracy * 100, train_species_accuracy * 100))
-            tf.logging.info('%s: Step %d: Validate \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
-                %(datetime.now(), i, validate_genus_accuracy * 100, validate_species_accuracy * 100))
-
-        if (INTERMEDIATE_FREQ > 0 and (i % INTERMEDIATE_FREQ == 0) and i > 0):
-            # If we want to do an intermediate save, save a checkpoint of the train
-            # graph, to restore into the eval graph.
-            #train_saver.save(sess, CHECKPOINT_NAME)
-            intermediate_file_name = (BASE_DIR + GRAPH_DIR + 'intermediate_' \
-                                                           + str(i) + '.pb')
-            train_saver.save(sess, CHECKPOINT_NAME)
-            tf.logging.info('Save intermediate result to : ' +
-                            intermediate_file_name)
-            output_graph_def = tf.graph_util.convert_variables_to_constants(
-                            sess, sess.graph.as_graph_def(),
-                            ['final_genus_tensor','final_species_tensor'])
-            with tf.gfile.FastGFile(intermediate_file_name, 'wb') as f:
-                f.write(output_graph_def.SerializeToString())
-
-    '''
-    Now that training is done we will run our final evaluation step on the
-    entire test set
-    '''
-    train_saver.save(sess, CHECKPOINT_NAME) #save before we do this
-    bottlenecks, genus_truths, species_truths, _ = \
-                            sess.run(testing_dataset.next_element)
-
-    #evaluation step
-    test_genus_accuracy, test_species_accuracy = \
-              sess.run([M.genus_evaluation_step,
-                        M.species_evaluation_step], feed_dict = \
-                        {M.bottleneck_input : bottlenecks,
-                         M.ground_truth_species_input : species_truths,
-                         M.ground_truth_genus_input: genus_truths,
-                         M.keep_prob : 1.0})
-    genus_softmax, species_softmax = \
-              sess.run([M.final_genus_tensor,
-                        M.final_species_tensor],
-                        feed_dict = \
-                        {M.bottleneck_input : bottlenecks,
-                         M.keep_prob:1.0})
+                             M.keep_prob : 1.0})
+        genus_softmax, species_softmax = \
+                  sess.run([M.final_genus_tensor,
+                            M.final_species_tensor],
+                            feed_dict = \
+                            {M.bottleneck_input : bottlenecks,
+                             M.keep_prob:1.0})
 
 
-    tf.logging.info('----------TEST SET EVAL ----------')
-    tf.logging.info('Genus accuracy = %.1f%% Species accuracy = %.1f%%'
-                %(test_genus_accuracy * 100, test_species_accuracy * 100))
-    tf.logging.info('----------TEST SET EVAL ----------')
+        tf.logging.info('----------TEST SET EVAL ----------')
+        tf.logging.info('Genus accuracy = %.1f%% Species accuracy = %.1f%%'
+                    %(test_genus_accuracy * 100, test_species_accuracy * 100))
+        tf.logging.info('----------TEST SET EVAL ----------')
 
-    '''
-    Now we are calculating top-5 and top-10 on the testing set
-    '''
-    for K in [1,5,10]:
-        gtop_5_accuracy=[]
-        stop_5_accuracy=[]
-        for gvec, svec, gtruth, struth in \
-                zip(genus_softmax, species_softmax, genus_truths, species_truths):
-            gtop_5 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-K:]]
-            stop_5 = [np.where(svec==w)[0][0] for w in sorted(svec)[-K:]]
-            gtop_5_accuracy.append(int(gtruth in gtop_5))
-            stop_5_accuracy.append(int(struth in stop_5))
-        Gtotal_accuracy = np.mean(gtop_5_accuracy)
-        Stotal_accuracy = np.mean(stop_5_accuracy)
-        tf.logging.info('Genus top %i accuracy: %1.2f%%' %(K, Gtotal_accuracy * 100))
-        tf.logging.info('Species top %i accuracy: %1.2f%%' %(K, Stotal_accuracy * 100))
+        '''
+        Now we are calculating top-5 and top-10 on the testing set
+        '''
+        for K in [1,5,10]:
+            gtop_5_accuracy=[]
+            stop_5_accuracy=[]
+            for gvec, svec, gtruth, struth in \
+                    zip(genus_softmax, species_softmax, genus_truths, species_truths):
+                gtop_5 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-K:]]
+                stop_5 = [np.where(svec==w)[0][0] for w in sorted(svec)[-K:]]
+                gtop_5_accuracy.append(int(gtruth in gtop_5))
+                stop_5_accuracy.append(int(struth in stop_5))
+            Gtotal_accuracy = np.mean(gtop_5_accuracy)
+            Stotal_accuracy = np.mean(stop_5_accuracy)
+            tf.logging.info('Genus top %i accuracy: %1.2f%%' %(K, Gtotal_accuracy * 100))
+            tf.logging.info('Species top %i accuracy: %1.2f%%' %(K, Stotal_accuracy * 100))
 
-    '''
-    Save final graph to disk!
-    '''
-    output_graph_target = BASE_DIR + GRAPH_DIR + output_graph_target
-    tf.logging.info('Save final graph to : ' + output_graph_target)
-    output_graph_def = tf.graph_util.convert_variables_to_constants(
-                    sess, sess.graph.as_graph_def(),
-                    ['final_genus_tensor','final_species_tensor'])
-    with tf.gfile.FastGFile(output_graph_target, 'wb') as f:
-        f.write(output_graph_def.SerializeToString())
+        '''
+        Save final graph to disk!
+        '''
+        output_graph_target = BASE_DIR + GRAPH_DIR + output_graph_target
+        tf.logging.info('Save final graph to : ' + output_graph_target)
+        output_graph_def = tf.graph_util.convert_variables_to_constants(
+                        sess, sess.graph.as_graph_def(),
+                        ['final_genus_tensor','final_species_tensor'])
+        with tf.gfile.FastGFile(output_graph_target, 'wb') as f:
+            f.write(output_graph_def.SerializeToString())
 
 if __name__ == '__main__':
     main()
