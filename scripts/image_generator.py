@@ -125,6 +125,9 @@ class ImageGenerator(object):
 			[w for w in self.image_lists if not self.image_lists[w]['long_tail']]
 		self.long = True
 		self.Genus = self.build_genus()
+		if self.category == 'testing':
+			self.no_testing_images = sum([len(self.image_lists[w]['testing']) \
+											for w in self.image_lists.keys()])
 
 	def build_genus(self):
 		return list(set([self.image_lists[w]['dir'].split('_')[0] \
@@ -161,6 +164,48 @@ class ImageGenerator(object):
 				tf.logging.warning('Invalid float found, recreating bottleneck')
 			yield (bottleneck_values, genus_index, species_index, bottleneck_path)
 
+	def get_sequential_image(self):
+		assert self.category == 'testing'
+		no_testing_images = sum([len(self.image_lists[w]['testing']) \
+											for w in self.image_lists.keys()])
+		testing_image_index = 0
+		species_index = 0
+		self.testing_index = 0
+		species_list = list(self.image_lists.keys())
+
+		current_species_label = species_list[species_index]
+		while self.testing_index < no_testing_images:
+
+			if testing_image_index < \
+					len(self.image_lists[current_species_label]['testing']):
+				out = self.image_lists[current_species_label]['testing'][testing_image_index]
+				testing_image_index += 1
+			else:
+				species_index += 1
+				if species_index < len(species_list):
+					current_species_label = species_list[species_index]
+					testing_image_index = 0
+				else:
+					break
+				out = self.image_lists[current_species_label]['testing'][testing_image_index]
+				testing_image_index += 1
+
+			self.testing_index += 1
+			genus_label = self.image_lists[current_species_label]['dir'].split('_')[0]
+			genus_index = self.Genus.index(genus_label)
+			#get path and read image embedding "bottleneck"
+			bottleneck_path = \
+				os.path.join(self.image_dir,
+							self.image_lists[current_species_label]['dir'], out)
+			with open(bottleneck_path, 'r') as bottleneck_file:
+				bottleneck_string = bottleneck_file.read()
+			try:
+				bottleneck_values = [float(x) for x in bottleneck_string.split(',')]
+			except ValueError:
+				tf.logging.warning('Invalid float found, recreating bottleneck')
+
+			yield (bottleneck_values, genus_index, species_index, bottleneck_path)
+
 
 class Dataset(object):
 	def __init__(self, generator : ImageGenerator,
@@ -169,12 +214,22 @@ class Dataset(object):
 					  balanced = 0):
 		self.batch_size = batch_size
 		self.prefetch_batch_buffer = prefetch_batch_buffer
-		self.next_element = self.build_iterator(generator.get_next_image)
+		self.generator = generator
+		self.next_element = self.build_iterator()
 
-	def build_iterator(self, generator_func):
+	def build_iterator(self):
+		'''
+		If it's the testing set then we want to give all pictures all at once
+		'''
+		if self.generator.category == 'testing':
+			generator_func = self.generator.get_sequential_image
+			self.batch_size = self.generator.no_testing_images
+		else:
+			generator_func = self.generator.get_next_image
 
 		dataset = tf.data.Dataset.from_generator(generator_func,
 								output_types=(tf.float32, tf.int64, tf.int64, tf.string))
+
 		dataset = dataset.batch(self.batch_size)
 		dataset = dataset.prefetch(self.prefetch_batch_buffer)
 		iter = dataset.make_one_shot_iterator()

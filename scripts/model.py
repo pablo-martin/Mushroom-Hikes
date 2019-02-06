@@ -118,6 +118,8 @@ class MultiHead_Model():
 			self.LOSS = self.cross_entropy_mean_genus \
 							   + self.cross_entropy_mean_species
 
+		tf.summary.scalar('cross_entropy_genus', self.cross_entropy_mean_genus)
+		tf.summary.scalar('cross_entropy_species', self.cross_entropy_mean_species)
 		tf.summary.scalar('cross_entropy', self.LOSS)
 
 	def _train(self):
