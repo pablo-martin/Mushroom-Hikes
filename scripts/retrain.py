@@ -21,8 +21,7 @@ r"""Simple transfer learning with image modules from TensorFlow Hub.
 This example shows how to train an image classifier based on any
 TensorFlow Hub module that computes image feature vectors. By default,
 it uses the feature vectors computed by Inception V3 trained on ImageNet.
-See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
-for more options.
+For more options, search https://tfhub.dev for image feature vector modules.
 
 The top layer receives as input a 2048-dimensional vector (assuming
 Inception V3) for each image. We train a softmax layer on top of this
@@ -133,7 +132,7 @@ import tensorflow as tf
 import tensorflow_hub as hub
 
 FLAGS = None
-
+HIDDEN_DIM = 3000
 MAX_NUM_IMAGES_PER_CLASS = 2 ** 27 - 1  # ~134M
 
 # The location where variable checkpoints will be stored.
@@ -359,7 +358,7 @@ def create_bottleneck_file(bottleneck_path, image_lists, label_name, index,
     tf.logging.fatal('File does not exist %s', image_path)
   image_data = tf.gfile.FastGFile(image_path, 'rb').read()
   try:
-    bottleneck_values = cross_entropy_image(
+    bottleneck_values = run_bottleneck_on_image(
         sess, image_data, jpeg_data_tensor, decoded_image_tensor,
         resized_input_tensor, bottleneck_tensor)
   except Exception as e:
@@ -470,7 +469,7 @@ def cache_bottlenecks(sess, image_lists, image_dir, bottleneck_dir,
             resized_input_tensor, bottleneck_tensor, module_name)
 
         how_many_bottlenecks += 1
-        if how_many_bottlenecks % 100 == 0:
+        if how_many_bottlenecks % 10000 == 0:
           tf.logging.info(
               str(how_many_bottlenecks) + ' bottleneck files created.')
 
@@ -717,7 +716,7 @@ def variable_summaries(var):
 
 
 def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
-                          quantize_layer, is_training):
+                          quantize_layer, hidden_dim, is_training):
   """Adds a new softmax and fully-connected layer for training and eval.
 
   We need to retrain the top layer to identify our new classes, so this function
@@ -743,6 +742,8 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
   """
   batch_size, bottleneck_tensor_size = bottleneck_tensor.get_shape().as_list()
   assert batch_size is None, 'We want to work with arbitrary batch size.'
+  keep_prob = tf.placeholder(tf.float32)
+
   with tf.name_scope('input'):
     bottleneck_input = tf.placeholder_with_default(
         bottleneck_tensor,
@@ -757,16 +758,22 @@ def add_final_retrain_ops(class_count, final_tensor_name, bottleneck_tensor,
   with tf.name_scope(layer_name):
     with tf.name_scope('weights'):
       initial_value = tf.truncated_normal(
-          [bottleneck_tensor_size, class_count], stddev=0.001)
-      layer_weights = tf.Variable(initial_value, name='final_weights')
+          [bottleneck_tensor_size, hidden_dim], stddev=0.001)
+      layer_weights = tf.Variable(initial_value, name='inter_weights')
+      initial_value2 = tf.truncated_normal([hidden_dim, class_count])
+      hidden_layer_w = tf.Variable(initial_value2, name='final_weights')
       variable_summaries(layer_weights)
 
     with tf.name_scope('biases'):
+      hidden_biases = tf.Variable(tf.zeros([hidden_dim]), name='hidden_biases')
       layer_biases = tf.Variable(tf.zeros([class_count]), name='final_biases')
       variable_summaries(layer_biases)
 
     with tf.name_scope('Wx_plus_b'):
-      logits = tf.matmul(bottleneck_input, layer_weights) + layer_biases
+      dropout_layer = tf.nn.dropout(bottleneck_input, keep_prob)
+      hidden_logits = tf.matmul(dropout_layer, layer_weights) + hidden_biases
+      dropout_layer2 = tf.nn.dropout(hidden_logits, keep_prob)
+      logits = tf.matmul(dropout_layer2, hidden_layer_w) + layer_biases
       tf.summary.histogram('pre_activations', logits)
 
   final_tensor = tf.nn.softmax(logits, name=final_tensor_name)
@@ -851,7 +858,8 @@ def run_final_eval(train_session, module_spec, class_count, image_lists,
       [evaluation_step, prediction],
       feed_dict={
           bottleneck_input: test_bottlenecks,
-          ground_truth_input: test_ground_truth
+          ground_truth_input: test_ground_truth,
+          keep_prob : 1.0
       })
   tf.logging.info('Final test accuracy = %.1f%% (N=%d)' %
                   (test_accuracy * 100, len(test_bottlenecks)))
@@ -885,7 +893,7 @@ def build_eval_session(module_spec, class_count):
     (_, _, bottleneck_input,
      ground_truth_input, final_tensor) = add_final_retrain_ops(
          class_count, FLAGS.final_tensor_name, bottleneck_tensor,
-         wants_quantization, is_training=False)
+         wants_quantization, hidden_dim = HIDDEN_DIM, is_training=False)
 
     # Now we need to restore the values from the training graph to the eval
     # graph.
@@ -1005,7 +1013,7 @@ def main(_):
     (train_step, cross_entropy, bottleneck_input,
      ground_truth_input, final_tensor) = add_final_retrain_ops(
          class_count, FLAGS.final_tensor_name, bottleneck_tensor,
-         wants_quantization, is_training=True)
+         wants_quantization, hidden_dim = HIDDEN_DIM, is_training=True)
 
   with tf.Session(graph=graph) as sess:
     # Initialize all weights: for the module to their pretrained values,
@@ -1067,7 +1075,8 @@ def main(_):
       train_summary, _ = sess.run(
           [merged, train_step],
           feed_dict={bottleneck_input: train_bottlenecks,
-                     ground_truth_input: train_ground_truth})
+                     ground_truth_input: train_ground_truth,
+                     keep_prob : 0.5})
       train_writer.add_summary(train_summary, i)
 
       # Every so often, print out how well the graph is training.
@@ -1076,7 +1085,8 @@ def main(_):
         train_accuracy, cross_entropy_value = sess.run(
             [evaluation_step, cross_entropy],
             feed_dict={bottleneck_input: train_bottlenecks,
-                       ground_truth_input: train_ground_truth})
+                       ground_truth_input: train_ground_truth,
+                       keep_prob: 1.0})
         tf.logging.info('%s: Step %d: Train accuracy = %.1f%%' %
                         (datetime.now(), i, train_accuracy * 100))
         tf.logging.info('%s: Step %d: Cross entropy = %f' %
@@ -1095,7 +1105,8 @@ def main(_):
         validation_summary, validation_accuracy = sess.run(
             [merged, evaluation_step],
             feed_dict={bottleneck_input: validation_bottlenecks,
-                       ground_truth_input: validation_ground_truth})
+                       ground_truth_input: validation_ground_truth,
+                       keep_prob : 1.0})
         validation_writer.add_summary(validation_summary, i)
         tf.logging.info('%s: Step %d: Validation accuracy = %.1f%% (N=%d)' %
                         (datetime.now(), i, validation_accuracy * 100,
@@ -1302,9 +1313,8 @@ if __name__ == '__main__':
       default=(
           'https://tfhub.dev/google/imagenet/inception_v3/feature_vector/1'),
       help="""\
-      Which TensorFlow Hub module to use.
-      See https://github.com/tensorflow/hub/blob/master/docs/modules/image.md
-      for some publicly available ones.\
+      Which TensorFlow Hub module to use. For more options,
+      search https://tfhub.dev for image feature vector modules.\
       """)
   parser.add_argument(
       '--saved_model_dir',

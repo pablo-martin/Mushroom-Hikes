@@ -1,138 +1,246 @@
+import os
 import sys
-import argparse
+import pickle
+import configparser
 import tensorflow as tf
-def main(_):
-    print('main')
-    print FLAGS
+from datetime import datetime
+
+from separate_imgs import separate_images_from_config
+from model import MultiHead_Model
+from image_generator import ImageSplitter, ImageGenerator, Dataset
+
+# The location where variable checkpoints will be stored.
+CHECKPOINT_NAME = '/tmp/_retrain_checkpoint'
+
+def main():
+
+    config = configparser.ConfigParser()
+    config.read('/home/ubuntu/Mushroom-Hikes/scripts/defaults.config')
+    '''
+    this will separate images before creating bottlenecks - not as important
+    now that they have been precomputed
+    '''
+    #separate_images_from_config(config)
+
+    '''
+    Values loaded from config file
+    '''
+
+    #directory paths
+    BASE_DIR = config['files']['BASE_DIR']
+    DATA_DIR = config['files']['DATA_DIR']
+    DISCARDED_DATA_DIR = config['files']['DISCARDED_DATA_DIR']
+    BOTTLENECK_DIR = config['files']['BOTTLENECK_DIR']
+    SUMMARY_DIR = config['files']['SUMMARY_DIR']
+    GRAPH_DIR = config['files']['GRAPH_DIR']
+
+    #data separation parameters
+    testing_percentage = int(config['data']['testing_percentage'])
+    validation_percentage = int(config['data']['validation_percentage'])
+    LONG_TAIL_CUTOFF = int(config['data']['LONG_TAIL_CUTOFF'])
+    MIN_IMAGES_PER_CLASS = int(config['data']['MIN_IMAGES_PER_CLASS'])
+
+    #training parameters
+    training_batch_size = int(config['training']['training_batch_size'])
+    validation_batch_size = int(config['training']['validation_batch_size'])
+    prefetch_batch_buffer = int(config['training']['prefetch_batch_buffer'])
+    balanced = int(config['training']['balanced'])
+    TRAINING_STEPS = int(config['training']['TRAINING_STEPS'])
+    EVALUATION_STEP = int(config['training']['EVALUATION_STEP'])
+    INTERMEDIATE_FREQ = int(config['training']['INTERMEDIATE_FREQ'])
+
+    #model parameters
+    shared_layer_size = int(config['model']['shared_layer_size'])
+    quantize_layer = int(config['model']['quantize_layer'])
+    learning_rate = float(config['model']['learning_rate'])
+    shared_layer_size = int(config['model']['shared_layer_size'])
+    output_graph_target = config['model']['model_file']
+
+    Image_list_path = BASE_DIR + GRAPH_DIR + 'train_test_sets.p'
+    if not os.path.exists(Image_list_path):
+        #we must split dataset first, and feed that into different generators
+        Imagelists = ImageSplitter(BOTTLENECK_DIR,
+                                   testing_percentage,
+                                   validation_percentage,
+                                   LONG_TAIL_CUTOFF)
+
+        pickle.dump(Imagelists, open(Image_list_path,'wb'))
+    else:
+        Imagelists = pickle.load(open(Image_list_path,'rb'))
+    #gives us a random image file from the training set
+    training_gen = ImageGenerator(imagesplitter = Imagelists,
+                                  category = 'training',
+                                  balanced = balanced)
+    #gives us a random image file from the validation set
+    validation_gen = ImageGenerator(imagesplitter = Imagelists,
+                                    category = 'validation',
+                                    balanced = balanced)
+    #ditto for testing set
+    testing_gen = ImageGenerator(imagesplitter = Imagelists,
+                                    category = 'testing',
+                                    balanced = balanced)
+
+    #training tensorflow dataset
+    training_dataset = Dataset(generator = training_gen,
+                                batch_size = training_batch_size,
+                                prefetch_batch_buffer = prefetch_batch_buffer,
+                                balanced = balanced)
+    #validation tensorflow dataset
+    validation_dataset = Dataset(generator = validation_gen,
+                                batch_size = validation_batch_size,
+                                prefetch_batch_buffer = prefetch_batch_buffer,
+                                balanced = balanced)
+
+    testing_dataset = Dataset(generator = testing_gen,
+                                batch_size = -1,
+                                prefetch_batch_buffer = prefetch_batch_buffer,
+                                balanced = balanced)
+
+    #let's load our model
+    M = MultiHead_Model(shared_layer_size = shared_layer_size,
+                        genus_count = Imagelists.genus_classes,
+                        species_count = Imagelists.species_classes,
+                        is_training = 1,
+                        learning_rate =  learning_rate)
+
+    train_saver = tf.train.Saver()
+    init = tf.global_variables_initializer()
+
+
+
+    with tf.Session() as sess:
+        sess.run(init)
+        # Merge all the summaries and write them out to the summaries_dir
+        merged = tf.summary.merge_all()
+        train_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'train/',
+                                                                        sess.graph)
+        validation_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'validation/')
+
+
+        '''
+        We start training step. Each training step will go thru one batch size
+        which we are setting to 1000, whilst our training set is ~700K
+        So each epoch will be around ~700 TRAINING_STEPS
+        '''
+        for i in range(TRAINING_STEPS):
+            bottlenecks, genus_truths, species_truths, _ = \
+                                        sess.run(training_dataset.next_element)
+            #training step
+            train_summary, _ = sess.run([merged, M.train_step],
+                                feed_dict = { \
+                                 M.bottleneck_input : bottlenecks,
+                                 M.ground_truth_species_input : species_truths,
+                                 M.ground_truth_genus_input: genus_truths,
+                                 M.keep_prob : 0.5})
+            train_writer.add_summary(train_summary, i)
+
+            is_last_step = (i + 1 == TRAINING_STEPS)
+            if (i % EVALUATION_STEP) == 0 or is_last_step:
+                '''
+                We are evaluating accuracy on the training batch that we just
+                trained on
+                '''
+                #evaluation step
+                train_genus_accuracy, train_species_accuracy = \
+                          sess.run([M.genus_evaluation_step,
+                                    M.species_evaluation_step], feed_dict = \
+                                    {M.bottleneck_input : bottlenecks,
+                                     M.ground_truth_species_input : species_truths,
+                                     M.ground_truth_genus_input: genus_truths,
+                                     M.keep_prob : 1.0})
+                '''
+                Now we are drawing validation_batch_size pictures from the
+                validation set and calculating accuracy, and not updating the
+                weights of the network
+                '''
+
+                bottlenecks, genus_truths, species_truths, _ = \
+                                        sess.run(validation_dataset.next_element)
+                #evaluation step
+                validation_summary, validate_genus_accuracy, validate_species_accuracy = \
+                          sess.run([merged, M.genus_evaluation_step,
+                                    M.species_evaluation_step], feed_dict = \
+                                    {M.bottleneck_input : bottlenecks,
+                                     M.ground_truth_species_input : species_truths,
+                                     M.ground_truth_genus_input: genus_truths,
+                                     M.keep_prob : 1.0})
+                validation_writer.add_summary(validation_summary, i)
+                tf.logging.info('%s: Step %d: Train \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
+                    %(datetime.now(), i, train_genus_accuracy * 100, train_species_accuracy * 100))
+                tf.logging.info('%s: Step %d: Validate \nGenus accuracy = %.1f%% \nSpecies accuracy = %.1f%%'
+                    %(datetime.now(), i, validate_genus_accuracy * 100, validate_species_accuracy * 100))
+
+            if (INTERMEDIATE_FREQ > 0 and (i % INTERMEDIATE_FREQ == 0) and i > 0):
+                # If we want to do an intermediate save, save a checkpoint of the train
+                # graph, to restore into the eval graph.
+                #train_saver.save(sess, CHECKPOINT_NAME)
+                intermediate_file_name = (BASE_DIR + GRAPH_DIR + 'intermediate_' \
+                                                               + str(i) + '.pb')
+                train_saver.save(sess, CHECKPOINT_NAME)
+                tf.logging.info('Save intermediate result to : ' +
+                                intermediate_file_name)
+                output_graph_def = tf.graph_util.convert_variables_to_constants(
+                                sess, sess.graph.as_graph_def(),
+                                ['final_genus_tensor','final_species_tensor'])
+                with tf.gfile.FastGFile(intermediate_file_name, 'wb') as f:
+                    f.write(output_graph_def.SerializeToString())
+
+        '''
+        Now that training is done we will run our final evaluation step on the
+        entire test set
+        '''
+        train_saver.save(sess, CHECKPOINT_NAME) #save before we do this
+        bottlenecks, genus_truths, species_truths, _ = \
+                                sess.run(testing_dataset.next_element)
+
+        #evaluation step
+        test_genus_accuracy, test_species_accuracy = \
+                  sess.run([M.genus_evaluation_step,
+                            M.species_evaluation_step], feed_dict = \
+                            {M.bottleneck_input : bottlenecks,
+                             M.ground_truth_species_input : species_truths,
+                             M.ground_truth_genus_input: genus_truths,
+                             M.keep_prob : 1.0})
+        genus_softmax, species_softmax = \
+                  sess.run([M.final_genus_tensor,
+                            M.final_species_tensor],
+                            feed_dict = \
+                            {M.bottleneck_input : bottlenecks,
+                             M.keep_prob:1.0})
+
+
+        tf.logging.info('----------TEST SET EVAL ----------')
+        tf.logging.info('Genus accuracy = %.1f%% Species accuracy = %.1f%%'
+                    %(test_genus_accuracy * 100, test_species_accuracy * 100))
+        tf.logging.info('----------TEST SET EVAL ----------')
+
+        '''
+        Now we are calculating top-5 and top-10 on the testing set
+        '''
+        for K in [1,5,10]:
+            gtop_5_accuracy=[]
+            stop_5_accuracy=[]
+            for gvec, svec, gtruth, struth in \
+                    zip(genus_softmax, species_softmax, genus_truths, species_truths):
+                gtop_5 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-K:]]
+                stop_5 = [np.where(svec==w)[0][0] for w in sorted(svec)[-K:]]
+                gtop_5_accuracy.append(int(gtruth in gtop_5))
+                stop_5_accuracy.append(int(struth in stop_5))
+            Gtotal_accuracy = np.mean(gtop_5_accuracy)
+            Stotal_accuracy = np.mean(stop_5_accuracy)
+            tf.logging.info('Genus top %i accuracy: %1.2f%%' %(K, Gtotal_accuracy * 100))
+            tf.logging.info('Species top %i accuracy: %1.2f%%' %(K, Stotal_accuracy * 100))
+
+        '''
+        Save final graph to disk!
+        '''
+        output_graph_target = BASE_DIR + GRAPH_DIR + output_graph_target
+        tf.logging.info('Save final graph to : ' + output_graph_target)
+        output_graph_def = tf.graph_util.convert_variables_to_constants(
+                        sess, sess.graph.as_graph_def(),
+                        ['final_genus_tensor','final_species_tensor'])
+        with tf.gfile.FastGFile(output_graph_target, 'wb') as f:
+            f.write(output_graph_def.SerializeToString())
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-                        description = "Train Mushroom Classification CNN-RNN")
-    parser.add_argument(
-      '--image_dir',
-      type=str,
-      default='',
-      help='Path to folders of labeled images.'
-    )
-    parser.add_argument(
-      '--output_graph',
-      type=str,
-      default='/tmp/output_graph.pb',
-      help='Where to save the trained graph.'
-    )
-    parser.add_argument(
-      '--intermediate_output_graphs_dir',
-      type=str,
-      default='/tmp/intermediate_graph/',
-      help='Where to save the intermediate graphs.'
-    )
-    parser.add_argument(
-      '--intermediate_store_frequency',
-      type=int,
-      default=0,
-      help="""\
-         How many steps to store intermediate graph. If "0" then will not
-         store.\
-      """
-    )
-    parser.add_argument(
-      '--output_labels',
-      type=str,
-      default='/tmp/output_labels.txt',
-      help='Where to save the trained graph\'s labels.'
-    )
-    parser.add_argument(
-      '--summaries_dir',
-      type=str,
-      default='/tmp/retrain_logs',
-      help='Where to save summary logs for TensorBoard.'
-    )
-    parser.add_argument(
-      '--how_many_training_steps',
-      type=int,
-      default=4000,
-      help='How many training steps to run before ending.'
-    )
-    parser.add_argument(
-      '--learning_rate',
-      type=float,
-      default=0.01,
-      help='How large a learning rate to use when training.'
-    )
-    parser.add_argument(
-      '--testing_percentage',
-      type=int,
-      default=10,
-      help='What percentage of images to use as a test set.'
-    )
-    parser.add_argument(
-      '--validation_percentage',
-      type=int,
-      default=10,
-      help='What percentage of images to use as a validation set.'
-    )
-    parser.add_argument(
-      '--eval_step_interval',
-      type=int,
-      default=10,
-      help='How often to evaluate the training results.'
-    )
-    parser.add_argument(
-      '--train_batch_size',
-      type=int,
-      default=100,
-      help='How many images to train on at a time.'
-    )
-    parser.add_argument(
-      '--test_batch_size',
-      type=int,
-      default=-1,
-      help="""\
-      How many images to test on. This test set is only used once, to evaluate
-      the final accuracy of the model after training completes.
-      A value of -1 causes the entire test set to be used, which leads to more
-      stable results across runs.\
-      """
-    )
-    parser.add_argument(
-      '--validation_batch_size',
-      type=int,
-      default=100,
-      help="""\
-      How many images to use in an evaluation batch. This validation set is
-      used much more often than the test set, and is an early indicator of how
-      accurate the model is during training.
-      A value of -1 causes the entire validation set to be used, which leads to
-      more stable results across training iterations, but may be slower on large
-      training sets.\
-      """
-    )
-    parser.add_argument(
-      '--print_misclassified_test_images',
-      default=False,
-      help="""\
-      Whether to print out a list of all misclassified test images.\
-      """,
-      action='store_true'
-    )
-    parser.add_argument(
-      '--bottleneck_dir',
-      type=str,
-      default='/tmp/bottleneck',
-      help='Path to cache bottleneck layer values as files.'
-    )
-    parser.add_argument(
-      '--final_tensor_name',
-      type=str,
-      default='final_result',
-      help="""\
-      The name of the output classification layer in the retrained graph.\
-      """
-    )
-    parser.add_argument(
-      '--saved_model_dir',
-      type=str,
-      default='',
-      help='Where to save the exported graph.')
-    FLAGS, unparsed = parser.parse_known_args()
-    tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+    main()

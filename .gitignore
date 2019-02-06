@@ -2,10 +2,12 @@
 MO_tables/
 DSA_info/
 final_dataframes/
+front_end/tmp_pics/
 flat_images/
 side_flat_images/
 venv/
 .ipynb_checkpoints/
+bottlenecks/
 tensorboard_logs_one_layer_full_data/
 front_end/graph/one_layer_10_percent_data_labels.txt
 front_end/graph/one_layer_10_percent_data.txt
