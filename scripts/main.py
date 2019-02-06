@@ -56,14 +56,17 @@ def main():
     shared_layer_size = int(config['model']['shared_layer_size'])
     output_graph_target = config['model']['model_file']
 
+    Image_list_path = BASE_DIR + GRAPH_DIR + 'train_test_sets.p'
+    if not os.path.exists(Image_list_path):
+        #we must split dataset first, and feed that into different generators
+        Imagelists = ImageSplitter(BOTTLENECK_DIR,
+                                   testing_percentage,
+                                   validation_percentage,
+                                   LONG_TAIL_CUTOFF)
 
-    #we must split dataset first, and feed that into different generators
-    Imagelists = ImageSplitter(BOTTLENECK_DIR,
-                               testing_percentage,
-                               validation_percentage,
-                               LONG_TAIL_CUTOFF)
-
-    pickle.dump(Imagelists, open(BASE_DIR + GRAPH_DIR + 'train_test_sets.p','wb'))
+        pickle.dump(Imagelists, open(Image_list_path,'wb'))
+    else:
+        Imagelists = pickle.load(open(Image_list_path,'rb'))
     #gives us a random image file from the training set
     training_gen = ImageGenerator(imagesplitter = Imagelists,
                                   category = 'training',
