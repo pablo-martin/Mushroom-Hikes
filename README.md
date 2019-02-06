@@ -16,7 +16,7 @@ I documented how I obtained, cleaned, and stitched that data together in separat
 Model is defined in two parts. We use Tensorflow-Hub to load the pretrained weights of Inception V3. The second part adds our layers. Depending what method we call, we can either:    
 1) add a single dense layer with a softmax output.  
 2) add a multi-head model predicting Genus and Species.   
-![System Pipeline](https://github.com/pablo-martin/Mushroom-Hikes/blob/dev/static/Model_Diagram.jpg)
+![System Pipeline](https://github.com/pablo-martin/Mushroom-Hikes/blob/dev/static/Model_Cartoon.jpg)
 
 ## Requirements  
 Full requirements are shown in requirements.txt. Main dependencies include:  
@@ -32,3 +32,40 @@ Our dataset is fed to the model using the Tensorflow Dataset [object](https://ww
 ## Execution
 To run the web server, run `python front_end/application.py`.  
 It is recommended, however, to be run in a production server like nginx, or gunicorn.
+
+## Results
+The following results were achieved with single-layer and multi-head model on top of Inception V3.
+
+
+<table>
+  <tr>
+   <td><strong>Model</strong>
+   </td>
+   <td>Top-1 Accuracy
+   </td>
+   <td>Predicted:
+<p>
+SAME USER
+   </td>
+  </tr>
+  <tr>
+   <td>Actual:
+<p>
+NOT SAME USER
+   </td>
+   <td><strong>TN:</strong> 389
+   </td>
+   <td><strong>FP:</strong> 76
+   </td>
+  </tr>
+  <tr>
+   <td>Actual:
+<p>
+SAME USER
+   </td>
+   <td><strong>FN:</strong> 5
+   </td>
+   <td><strong>TP:</strong> 91
+   </td>
+  </tr>
+</table>

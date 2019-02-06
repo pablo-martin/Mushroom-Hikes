@@ -1,4 +1,5 @@
 *.pyc
+.gitignore
 MO_tables/
 DSA_info/
 final_dataframes/
