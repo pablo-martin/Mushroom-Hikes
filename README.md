@@ -32,3 +32,32 @@ Our dataset is fed to the model using the Tensorflow Dataset [object](https://ww
 ## Execution
 To run the web server, run `python front_end/application.py`.  
 It is recommended, however, to be run in a production server like nginx, or gunicorn.
+
+## Results
+The following results were achieved with single-layer and multi-head model on top of Inception V3.
+
+
+<table>
+  <tr>
+   <td><strong>Model/Accuracy</strong>
+   </td>
+   <td>Top-1</td>
+   <td>Top-5</td>
+    <td>Top-10</td>
+  </tr>
+    <tr>
+   <td>Single-Layer CNN
+   </td>
+   <td>9%</td>
+   <td>36.19%</td>
+    <td>44.77%</td>
+  </tr>  
+  <tr>
+   <td>Multi-Head CNN
+   </td>
+   <td>Genus: 0.0% <br> Species: 0.0%</td>
+   <td>Genus: 0.0% <br> Species: 0.0%</td>
+   <td>Genus: 0.0% <br> Species: 0.0%</td>
+  </tr>
+
+</table>
