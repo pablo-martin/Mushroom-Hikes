@@ -1,12 +1,13 @@
 import os
 import sys
+import pickle
 import configparser
 import tensorflow as tf
 from datetime import datetime
 
-from scripts.separate_imgs import separate_images_from_config
-from scripts.model import MultiHead_Model
-from scripts.image_generator import ImageSplitter, ImageGenerator, Dataset
+from separate_imgs import separate_images_from_config
+from model import MultiHead_Model
+from image_generator import ImageSplitter, ImageGenerator, Dataset
 
 # The location where variable checkpoints will be stored.
 CHECKPOINT_NAME = '/tmp/_retrain_checkpoint'
@@ -62,7 +63,7 @@ def main():
                                validation_percentage,
                                LONG_TAIL_CUTOFF)
 
-
+    pickle.dump(Imagelists, open(BASE_DIR + GRAPH_DIR + 'train_test_sets.p','wb'))
     #gives us a random image file from the training set
     training_gen = ImageGenerator(imagesplitter = Imagelists,
                                   category = 'training',
@@ -172,6 +173,7 @@ with tf.Session() as sess:
             #train_saver.save(sess, CHECKPOINT_NAME)
             intermediate_file_name = (BASE_DIR + GRAPH_DIR + 'intermediate_' \
                                                            + str(i) + '.pb')
+            train_saver.save(sess, CHECKPOINT_NAME)
             tf.logging.info('Save intermediate result to : ' +
                             intermediate_file_name)
             output_graph_def = tf.graph_util.convert_variables_to_constants(
@@ -184,6 +186,7 @@ with tf.Session() as sess:
     Now that training is done we will run our final evaluation step on the
     entire test set
     '''
+    train_saver.save(sess, CHECKPOINT_NAME) #save before we do this
     bottlenecks, genus_truths, species_truths, _ = \
                             sess.run(testing_dataset.next_element)
 
@@ -195,11 +198,39 @@ with tf.Session() as sess:
                          M.ground_truth_species_input : species_truths,
                          M.ground_truth_genus_input: genus_truths,
                          M.keep_prob : 1.0})
+    genus_softmax, species_softmax = \
+              sess.run([M.final_genus_tensor,
+                        M.final_species_tensor],
+                        feed_dict = \
+                        {M.bottleneck_input : bottlenecks,
+                         M.keep_prob:1.0})
+
 
     tf.logging.info('----------TEST SET EVAL ----------')
     tf.logging.info('Genus accuracy = %.1f%% Species accuracy = %.1f%%'
                 %(test_genus_accuracy * 100, test_species_accuracy * 100))
     tf.logging.info('----------TEST SET EVAL ----------')
+
+    '''
+    Now we are calculating top-5 and top-10 on the testing set
+    '''
+    for K in [1,5,10]:
+        gtop_5_accuracy=[]
+        stop_5_accuracy=[]
+        for gvec, svec, gtruth, struth in \
+                zip(genus_softmax, species_softmax, genus_truths, species_truths):
+            gtop_5 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-K:]]
+            stop_5 = [np.where(svec==w)[0][0] for w in sorted(svec)[-K:]]
+            gtop_5_accuracy.append(int(gtruth in gtop_5))
+            stop_5_accuracy.append(int(struth in stop_5))
+        Gtotal_accuracy = np.mean(gtop_5_accuracy)
+        Stotal_accuracy = np.mean(stop_5_accuracy)
+        tf.logging.info('Genus top %i accuracy: %1.2f%%' %(K, Gtotal_accuracy * 100))
+        tf.logging.info('Species top %i accuracy: %1.2f%%' %(K, Stotal_accuracy * 100))
+
+    '''
+    Save final graph to disk!
+    '''
     output_graph_target = BASE_DIR + GRAPH_DIR + output_graph_target
     tf.logging.info('Save final graph to : ' + output_graph_target)
     output_graph_def = tf.graph_util.convert_variables_to_constants(
