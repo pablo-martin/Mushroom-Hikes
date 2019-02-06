@@ -16,7 +16,7 @@ I documented how I obtained, cleaned, and stitched that data together in separat
 Model is defined in two parts. We use Tensorflow-Hub to load the pretrained weights of Inception V3. The second part adds our layers. Depending what method we call, we can either:    
 1) add a single dense layer with a softmax output.  
 2) add a multi-head model predicting Genus and Species.   
-![System Pipeline](https://github.com/pablo-martin/Mushroom-Hikes/blob/dev/static/Model_Cartoon.jpg)
+![System Pipeline](https://github.com/pablo-martin/Mushroom-Hikes/blob/master/static/Model_Cartoon.jpg)
 
 ## Requirements  
 Full requirements are shown in requirements.txt. Main dependencies include:  
