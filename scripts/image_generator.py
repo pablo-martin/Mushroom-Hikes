@@ -1,19 +1,17 @@
 import os
 import re
 import hashlib
-import glob
 import random
 import collections
 import tensorflow as tf
-from tensorflow import Tensor
 
-class Inputs(object):
-	def __init__(self, bottlenecks, species_ground_truths, filenames):
-		self.bottlenecks = bottlenecks
-		self.species_ground_truths = species_ground_truths
-		self.filenames = filenames
+
 
 class ImageSplitter(object):
+	'''
+	This will split up our dataset into train/val/test sets. It will create an
+	object where image_lists is an OrderedDict with this info
+	'''
 	def __init__(self,
 				image_dir,
 				testing_percentage,
@@ -25,7 +23,9 @@ class ImageSplitter(object):
 		self.validation_percentage = validation_percentage
 		self.LONG_TAIL_CUTOFF = LONG_TAIL_CUTOFF
 		self.image_lists = self.create_image_lists()
+		#how many species are in list
 		self.species_classes = len(self.image_lists.keys())
+		#how many genus are in list
 		self.genus_classes = len(set([self.image_lists[w]['dir'].split('_')[0] \
 										for w in self.image_lists.keys()]))
 
@@ -109,7 +109,20 @@ class ImageSplitter(object):
 			}
 		return result
 
+
+
+
 class ImageGenerator(object):
+	'''
+	This grabs an ImageSplitter object, and returns a generator depending on 2
+	parameters. If category is 'testing', the generator returns all the images
+	in order (since usually we only want to test the entire testing set in one
+	go, at the end, when training is done). If, however, category is 'training'
+	or 'validation', then the generator returns an image at random. If balanced
+	is True, then it will return an image from the long tail or short tail, where
+	that is determined by LONG_TAIL_CUTOFF of the ImageSplitter object. If False
+	then it returns a totally random picture
+	'''
 	def __init__(self,
 				imagesplitter : ImageSplitter,
 				category,
@@ -154,7 +167,8 @@ class ImageGenerator(object):
 			ex = random.choice(self.image_lists[species_label][self.category])
 
 			#get path and read image embedding "bottleneck"
-			bottleneck_path = os.path.join(self.image_dir, self.image_lists[species_label]['dir'], ex)
+			bottleneck_path = os.path.join(self.image_dir,
+			 						self.image_lists[species_label]['dir'], ex)
 
 			with open(bottleneck_path, 'r') as bottleneck_file:
 				bottleneck_string = bottleneck_file.read()
@@ -208,10 +222,14 @@ class ImageGenerator(object):
 
 
 class Dataset(object):
+	'''
+	Takes an ImageGenerator object, and creates a Tensorflow Dataset, which
+	returns a batch_size amount of samples.
+	'''
 	def __init__(self, generator : ImageGenerator,
 					  batch_size = 100,
-					  prefetch_batch_buffer = 50,
-					  balanced = 0):
+					  prefetch_batch_buffer = 50):
+
 		self.batch_size = batch_size
 		self.prefetch_batch_buffer = prefetch_batch_buffer
 		self.generator = generator
@@ -228,7 +246,7 @@ class Dataset(object):
 			generator_func = self.generator.get_next_image
 
 		dataset = tf.data.Dataset.from_generator(generator_func,
-								output_types=(tf.float32, tf.int64, tf.int64, tf.string))
+					output_types=(tf.float32, tf.int64, tf.int64, tf.string))
 
 		dataset = dataset.batch(self.batch_size)
 		dataset = dataset.prefetch(self.prefetch_batch_buffer)

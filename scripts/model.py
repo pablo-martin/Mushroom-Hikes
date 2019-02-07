@@ -17,7 +17,7 @@ class MultiHead_Model():
 		self._add_multi_head()
 		#if we want to train add loss and optimizer
 		if is_training: self._train()
-		#this allows us to evaluate our model
+		#adding evaluation subgraph
 		self._evaluate()
 
 	def _add_pretrained_inception(self, module_name = \
@@ -46,8 +46,70 @@ class MultiHead_Model():
 			self.dropout_layer = tf.nn.dropout(self.bottleneck_input, self.keep_prob)
 
 
+	def _add_single_layer(self):
+		'''
+		Adding a feed-forward network to Inception
+		'''
+
+		self.ground_truth_species_input = tf.placeholder(
+		   					tf.int64, [batch_size], name='GroundTruthInput')
+
+		# Organizing the following ops so they are easier to see in TensorBoard.
+		with tf.name_scope('final_retrain_ops'):
+			with tf.name_scope('weights'):
+		 		initial_value = tf.truncated_normal(
+		     					[self.bottleneck_tensor_size,
+								 self.shared_layer_size], stddev=0.001)
+		 		self.layer_weights = tf.Variable(initial_value, name='inter_weights')
+		 		initial_value2 = tf.truncated_normal([self.shared_layer_size, self.species_count])
+		 		self.hidden_layer_w = tf.Variable(initial_value2, name='final_weights')
+		 		self.variable_summaries(self.layer_weights)
+				self.variable_summaries(self.hidden_layer_w)
+
+		with tf.name_scope('biases'):
+			self.hidden_biases = tf.Variable(tf.zeros([self.shared_layer_size]), name='hidden_biases')
+		 	self.layer_biases = tf.Variable(tf.zeros([self.species_count]), name='final_biases')
+		 	variable_summaries(self.hidden_biases, self.layer_biases)
+
+		with tf.name_scope('Wx_plus_b'):
+			self.hidden_logits = tf.matmul(self.dropout_layer, self.layer_weights) + self.hidden_biases
+			self.dropout_layer2 = tf.nn.dropout(self.hidden_logits, self.keep_prob)
+			self.logits = tf.matmul(self.dropout_layer2, self.hidden_layer_w) + self.layer_biases
+			tf.summary.histogram('pre_activations', self.logits)
+
+		self.final_tensor = tf.nn.softmax(self.logits, name='final_species_tensor')
+
+		# The tf.contrib.quantize functions rewrite the graph in place for
+		# quantization. The imported model graph has already been rewritten, so upon
+		# calling these rewrites, only the newly added final layer will be
+		# transformed.
+		if quantize_layer:
+			if is_training:
+		 		tf.contrib.quantize.create_training_graph()
+		else:
+			tf.contrib.quantize.create_eval_graph()
+
+		tf.summary.histogram('activations', self.final_tensor)
+
+
+		with tf.name_scope('cross_entropy'):
+			cross_entropy_mean = tf.losses.sparse_softmax_cross_entropy(
+		   			labels=self.ground_truth_species_input, logits=self.logits)
+
+		tf.summary.scalar('cross_entropy', cross_entropy_mean)
+
+		with tf.name_scope('train'):
+			self.optimizer = tf.train.GradientDescentOptimizer(self.learning_rate)
+			self.train_step = optimizer.minimize(cross_entropy_mean)
+
+
 
 	def _add_multi_head(self):
+		'''
+		This will add dropout from the image embedding to the first shared layer
+		This shared layer will in turn go to two separate layers, each predicting
+		either the genus or species of the picture
+		'''
 		# Organizing the following ops so they are easier to see in TensorBoard.
 		with tf.name_scope('final_retrain_ops'):
 			with tf.name_scope('weights'):

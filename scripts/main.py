@@ -16,23 +16,18 @@ def main():
 
     config = configparser.ConfigParser()
     config.read('/home/ubuntu/Mushroom-Hikes/scripts/defaults.config')
-    '''
-    this will separate images before creating bottlenecks - not as important
-    now that they have been precomputed
-    '''
-    #separate_images_from_config(config)
+
 
     '''
     Values loaded from config file
     '''
-
     #directory paths
     BASE_DIR = config['files']['BASE_DIR']
-    DATA_DIR = config['files']['DATA_DIR']
-    DISCARDED_DATA_DIR = config['files']['DISCARDED_DATA_DIR']
-    BOTTLENECK_DIR = config['files']['BOTTLENECK_DIR']
-    SUMMARY_DIR = config['files']['SUMMARY_DIR']
-    GRAPH_DIR = config['files']['GRAPH_DIR']
+    DATA_DIR = BASE_DIR + config['files']['DATA_DIR']
+    DISCARDED_DATA_DIR = BASE_DIR + config['files']['DISCARDED_DATA_DIR']
+    BOTTLENECK_DIR = BASE_DIR + config['files']['BOTTLENECK_DIR']
+    SUMMARY_DIR = BASE_DIR + config['files']['SUMMARY_DIR']
+    GRAPH_DIR = BASE_DIR + config['files']['GRAPH_DIR']
 
     #data separation parameters
     testing_percentage = int(config['data']['testing_percentage'])
@@ -56,6 +51,14 @@ def main():
     shared_layer_size = int(config['model']['shared_layer_size'])
     output_graph_target = config['model']['model_file']
 
+    '''
+    this will move classes that have less than MIN_IMAGES_PER_CLASS in config
+    file to a side folder specified also in the defaults.config
+    Only important if bottlenecks (image embeddings) have not been created
+    '''
+    separate_images_from_config(DATA_DIR, DISCARDED_DATA_DIR, MIN_IMAGES_PER_CLASS)
+
+
     Image_list_path = BASE_DIR + GRAPH_DIR + 'train_test_sets.p'
     if not os.path.exists(Image_list_path):
         #we must split dataset first, and feed that into different generators
@@ -63,10 +66,10 @@ def main():
                                    testing_percentage,
                                    validation_percentage,
                                    LONG_TAIL_CUTOFF)
-
         pickle.dump(Imagelists, open(Image_list_path,'wb'))
     else:
         Imagelists = pickle.load(open(Image_list_path,'rb'))
+
     #gives us a random image file from the training set
     training_gen = ImageGenerator(imagesplitter = Imagelists,
                                   category = 'training',
@@ -83,18 +86,15 @@ def main():
     #training tensorflow dataset
     training_dataset = Dataset(generator = training_gen,
                                 batch_size = training_batch_size,
-                                prefetch_batch_buffer = prefetch_batch_buffer,
-                                balanced = balanced)
+                                prefetch_batch_buffer = prefetch_batch_buffer)
     #validation tensorflow dataset
     validation_dataset = Dataset(generator = validation_gen,
                                 batch_size = validation_batch_size,
-                                prefetch_batch_buffer = prefetch_batch_buffer,
-                                balanced = balanced)
+                                prefetch_batch_buffer = prefetch_batch_buffer)
 
     testing_dataset = Dataset(generator = testing_gen,
                                 batch_size = -1,
-                                prefetch_batch_buffer = prefetch_batch_buffer,
-                                balanced = balanced)
+                                prefetch_batch_buffer = prefetch_batch_buffer)
 
     #let's load our model
     M = MultiHead_Model(shared_layer_size = shared_layer_size,
@@ -103,18 +103,16 @@ def main():
                         is_training = 1,
                         learning_rate =  learning_rate)
 
+
+
     train_saver = tf.train.Saver()
     init = tf.global_variables_initializer()
-
-
-
     with tf.Session() as sess:
         sess.run(init)
         # Merge all the summaries and write them out to the summaries_dir
         merged = tf.summary.merge_all()
-        train_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'train/',
-                                                                        sess.graph)
-        validation_writer = tf.summary.FileWriter(BASE_DIR + SUMMARY_DIR + 'validation/')
+        train_writer = tf.summary.FileWriter(SUMMARY_DIR + 'train/', sess.graph)
+        validation_writer = tf.summary.FileWriter(SUMMARY_DIR + 'validation/')
 
 
         '''
@@ -138,7 +136,7 @@ def main():
             if (i % EVALUATION_STEP) == 0 or is_last_step:
                 '''
                 We are evaluating accuracy on the training batch that we just
-                trained on
+                trained on with dropout of 1!
                 '''
                 #evaluation step
                 train_genus_accuracy, train_species_accuracy = \
@@ -174,7 +172,7 @@ def main():
                 # If we want to do an intermediate save, save a checkpoint of the train
                 # graph, to restore into the eval graph.
                 #train_saver.save(sess, CHECKPOINT_NAME)
-                intermediate_file_name = (BASE_DIR + GRAPH_DIR + 'intermediate_' \
+                intermediate_file_name = (GRAPH_DIR + 'intermediate_' \
                                                                + str(i) + '.pb')
                 train_saver.save(sess, CHECKPOINT_NAME)
                 tf.logging.info('Save intermediate result to : ' +
@@ -206,7 +204,7 @@ def main():
                             M.final_species_tensor],
                             feed_dict = \
                             {M.bottleneck_input : bottlenecks,
-                             M.keep_prob:1.0})
+                             M.keep_prob : 1.0})
 
 
         tf.logging.info('----------TEST SET EVAL ----------')
@@ -217,19 +215,27 @@ def main():
         '''
         Now we are calculating top-5 and top-10 on the testing set
         '''
-        for K in [1,5,10]:
-            gtop_5_accuracy=[]
-            stop_5_accuracy=[]
-            for gvec, svec, gtruth, struth in \
-                    zip(genus_softmax, species_softmax, genus_truths, species_truths):
-                gtop_5 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-K:]]
-                stop_5 = [np.where(svec==w)[0][0] for w in sorted(svec)[-K:]]
-                gtop_5_accuracy.append(int(gtruth in gtop_5))
-                stop_5_accuracy.append(int(struth in stop_5))
-            Gtotal_accuracy = np.mean(gtop_5_accuracy)
-            Stotal_accuracy = np.mean(stop_5_accuracy)
-            tf.logging.info('Genus top %i accuracy: %1.2f%%' %(K, Gtotal_accuracy * 100))
-            tf.logging.info('Species top %i accuracy: %1.2f%%' %(K, Stotal_accuracy * 100))
+
+        gtop_accuracy = [[],[],[]]
+        stop_accuracy = [[],[],[]]
+        for gvec, svec, gtruth, struth in \
+                zip(genus_softmax, species_softmax, genus_truths, species_truths):
+            gtop_10 = [np.where(gvec==w)[0][0] for w in sorted(gvec)[-10:]]
+            stop_10 = [np.where(svec==w)[0][0] for w in sorted(svec)[-10:]]
+            gtop_accuracy[0].append(int(gtruth in gtop_10[-1:]))
+            gtop_accuracy[1].append(int(gtruth in gtop_10[-5:]))
+            gtop_accuracy[2].append(int(gtruth in gtop_10[-10:]))
+            stop_accuracy[0].append(int(struth in stop_10[-1:]))
+            stop_accuracy[1].append(int(struth in stop_10[-5:]))
+            stop_accuracy[2].append(int(struth in stop_10[-10:]))
+
+        Gtotal_accuracy = np.mean(gtop_accuracy[0])
+        Stotal_accuracy = np.mean(stop_5_accuracy)
+        for gacc, sacc, KK in zip(gtop_accuracy, stop_accuracy, [1,5,10]):
+            tf.logging.info('Genus top %i accuracy: %1.2f%%' \
+                                                    %(KK, np.mean(gacc) * 100))
+            tf.logging.info('Species top %i accuracy: %1.2f%%' \
+                                                    %(KK, np.mean(sacc) * 100))
 
         '''
         Save final graph to disk!
